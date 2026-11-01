@@ -1,0 +1,101 @@
+---
+import type { Lang } from '../lib/booking-core';
+import { useTranslations } from '../i18n/ui';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+// Opciones puramente visuales del mapa (los datos — dirección — vienen de la hoja).
+const useGoogleMap = true; // false = mapa ilustrado con los colores de la marca
+const mapZoom = 16;        // 13 ≈ ciudad, 16 ≈ calle
+---
+<div class="bg-grey">
+  <section id="contacto" class="container section contact-grid">
+    <div class="contact-info" data-stagger>
+      <h2 class="h2" style="font-size: clamp(42px, 4.6vw, 64px)">{t('contact.title')}</h2>
+      <p class="data-status" data-data-status></p>
+      <!-- Todo sale de la hoja: Ajustes (dirección, teléfono, email_contacto) y Horarios -->
+      <dl data-needs-data hidden>
+        <div><dt>{t('contact.address')}</dt><dd data-salon="addressLines"></dd></div>
+        <div><dt>{t('contact.hours')}</dt><dd data-hours data-lang={lang}></dd></div>
+        <div><dt>{t('contact.phone')}</dt><dd><a data-salon-href="tel" data-salon="phone"></a></dd></div>
+        <div data-salon-optional="email"><dt>{t('contact.email')}</dt><dd><a data-salon-href="mailto" data-salon="email"></a></dd></div>
+      </dl>
+      <a data-salon-href="maps" data-needs-data hidden target="_blank" rel="noopener" class="btn btn-mint" style="align-self: flex-start; padding: 16px 26px">
+        {t('contact.openMaps')}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"></path></svg>
+      </a>
+    </div>
+    <div id="mapa" class="map" data-reveal="image" style="--rd: .2s">
+      {useGoogleMap ? (
+        <iframe data-salon-src="map" data-zoom={mapZoom} title={t('contact.mapLabel')} loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>
+      ) : (
+        <svg viewBox="0 0 600 420" preserveAspectRatio="xMidYMid slice" role="img" aria-label={t('contact.mapLabel')}>
+          <defs>
+            <linearGradient id="seaPA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="rgb(191, 234, 252)"></stop><stop offset="1" stop-color="rgb(140, 224, 224)"></stop></linearGradient>
+            <radialGradient id="pinPA" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#FFFFFF"></stop><stop offset="0.55" stop-color="#DDF7EA"></stop><stop offset="1" stop-color="#8FE9C4"></stop></radialGradient>
+          </defs>
+          <rect x="0" y="0" width="600" height="420" fill="#F8F8F6"></rect>
+          <path d="M0 382 C 150 362, 300 396, 505 402" stroke="#ECECE8" stroke-width="30" fill="none"></path>
+          <g stroke="#E6E6E2" stroke-width="6" fill="none" stroke-linecap="round">
+            <path d="M150 112 C 165 262, 330 304, 420 214"></path><path d="M0 206 L 230 190"></path><path d="M262 0 L 296 420"></path><path d="M330 236 L 482 244"></path><path d="M60 0 L 120 420"></path><path d="M360 0 L 410 200"></path>
+          </g>
+          <path d="M18 150 C 120 130, 180 86, 250 100 C 322 116, 334 170, 382 230 C 412 268, 440 288, 482 298" stroke="rgb(182, 242, 196)" stroke-width="24" fill="none" stroke-linecap="round"></path>
+          <ellipse cx="240" cy="176" rx="58" ry="46" fill="#FFFFFF" stroke="#D8D8D4" stroke-width="1" stroke-dasharray="3 4"></ellipse>
+          <path d="M468 0 L600 0 L600 420 L506 420 L500 304 L544 304 L544 252 L482 252 Z" fill="url(#seaPA)"></path>
+          <g font-family="Source Sans 3, sans-serif" font-size="10.5" font-weight="500" letter-spacing="2" fill="#5E5B64">
+            <text x="240" y="212" text-anchor="middle">CIUTAT VELLA</text>
+            <text x="92" y="124" fill="#1F4A42">JARDÍ DEL TÚRIA</text>
+            <text x="300" y="300">RUSSAFA</text>
+            <text x="440" y="110" text-anchor="end">EL CABANYAL</text>
+            <text x="398" y="322" text-anchor="middle">CIUTAT DE LES ARTS</text>
+            <text x="516" y="282" fill="#1F4A42">PORT</text>
+          </g>
+          <text x="560" y="60" font-family="Italiana, serif" font-size="15" fill="#1F4A42" transform="rotate(90 560 60)">Mar Mediterráneo</text>
+          <circle cx="240" cy="132" r="30" fill="rgb(182, 242, 196)" opacity="0.45"></circle>
+          <circle cx="240" cy="132" r="15" fill="url(#pinPA)" stroke="#2A2830" stroke-width="1.2"></circle>
+          <path d="M240 147 L 240 170" stroke="#2A2830" stroke-width="1.2"></path>
+        </svg>
+      )}
+      {!useGoogleMap && (
+        <div class="map-card" data-needs-data hidden><strong data-salon="name"></strong><span data-salon="address"></span></div>
+      )}
+    </div>
+  </section>
+</div>
+
+<script>
+  import { onSiteData } from '../lib/site-data';
+  import { ui } from '../i18n/ui';
+  import type { Lang, OpeningHours } from '../lib/booking-core';
+
+  // Horario a partir de la pestaña «Horarios»: agrupa días seguidos con el mismo horario.
+  // Ej.: «Lun–Vie 9:30–14:00 · 15:00–20:00» / «Sáb 9:30–14:00».
+  const el = document.querySelector<HTMLElement>('[data-hours]');
+  if (el) {
+    const lang = (el.dataset.lang || 'es') as Lang;
+    const wd = ui[lang]['wd.short'].split('|');
+    const hm = (t: string) => t.replace(/^0/, '');
+    const span = (h: OpeningHours) => h.breakStart && h.breakEnd
+      ? `${hm(h.open)}–${hm(h.breakStart)} · ${hm(h.breakEnd)}–${hm(h.close)}`
+      : `${hm(h.open)}–${hm(h.close)}`;
+    onSiteData({
+      ok: (cat) => {
+        const order = [1, 2, 3, 4, 5, 6, 0];
+        const groups: { from: number; to: number; text: string }[] = [];
+        order.forEach((d) => {
+          const h = cat.hours.find((x) => x.day === d);
+          if (!h) return;
+          const text = span(h);
+          const last = groups[groups.length - 1];
+          if (last && last.text === text && order.indexOf(last.to) === order.indexOf(d) - 1) last.to = d;
+          else groups.push({ from: d, to: d, text });
+        });
+        el.innerHTML = '';
+        groups.forEach((g, i) => {
+          if (i) el.appendChild(document.createElement('br'));
+          el.appendChild(document.createTextNode(`${wd[g.from]}${g.to !== g.from ? '–' + wd[g.to] : ''} ${g.text}`));
+        });
+      },
+    });
+  }
+</script>

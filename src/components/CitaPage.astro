@@ -1,0 +1,137 @@
+---
+/** Página «Tu cita»: la clienta llega aquí desde el enlace del email y puede cancelar con un clic. */
+import Base from '../layouts/Base.astro';
+import Header from './Header.astro';
+import Footer from './Footer.astro';
+import BookingModal from './BookingModal.astro';
+import FloatingBook from './FloatingBook.astro';
+import type { Lang } from '../lib/booking-core';
+import { ui, useTranslations, localePath } from '../i18n/ui';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+const cfg = { lang, dict: ui[lang], home: localePath(lang, '/') };
+---
+<Base lang={lang} path="/cita" titleSalon={t('cita.title')} noindex>
+  <Header lang={lang} path="/cita" home={false} />
+  <main class="cita-wrap">
+    <section class="cita-card" data-cita aria-live="polite">
+      <p class="cita-muted">{t('cita.loading')}</p>
+    </section>
+  </main>
+  <Footer lang={lang} />
+  <FloatingBook lang={lang} />
+  <BookingModal lang={lang} />
+  <script type="application/json" id="cita-config" set:html={JSON.stringify(cfg)}></script>
+</Base>
+
+<script>
+  import { getBooking, cancelBooking, getCatalog, ApiError } from '../lib/booking-api';
+  import { telHref } from '../lib/site-data';
+  import { formatDateLong, esc } from '../lib/format';
+  import type { Booking, Catalog, Lang } from '../lib/booking-core';
+
+  const cfg = JSON.parse(document.getElementById('cita-config')!.textContent!) as { lang: Lang; dict: Record<string, string>; home: string };
+  const L = cfg.lang;
+  const t = (k: string) => cfg.dict[k] ?? k;
+  const box = document.querySelector<HTMLElement>('[data-cita]')!;
+  const params = new URLSearchParams(location.search);
+  const code = params.get('c') || '';
+  const token = params.get('t') || '';
+  let cat: Catalog | null = null;
+  let booking: Booking | null = null;
+  let loadError = '';   // no se pudo comprobar la cita (≠ la cita no existe)
+  let cancelError = ''; // no se pudo cancelar: la cita sigue confirmada
+  let busy = false;
+
+  const errMsg = (err: unknown) => { console.error(err); return t(`err.${err instanceof ApiError ? err.kind : 'network'}`); };
+  // Teléfono de la hoja; si no se ha podido cargar, no se muestra el botón de llamar.
+  const callBtn = (cls = 'btn btn-white') => cat ? `<a class="${cls}" href="${esc(telHref(cat.salon.phone))}">${esc(t('cita.call'))}</a>` : '';
+
+  function render() {
+    if (loadError) {
+      box.innerHTML = `<h1>${esc(t('cita.title'))}</h1>
+        <p class="cita-error" role="alert">${esc(t('cita.error'))} ${esc(loadError)}</p>
+        <div class="cita-actions"><button type="button" class="btn btn-mint" data-retry>${esc(t('err.retry'))}</button>${callBtn()}</div>`;
+      return;
+    }
+    if (!booking || !cat) {
+      box.innerHTML = `<h1>${esc(t('cita.title'))}</h1><p class="cita-muted">${esc(t('cita.notFound'))}</p>${callBtn('btn btn-mint')}`;
+      return;
+    }
+    const b = booking;
+    const svc = cat.services.find((s) => s.id === b.serviceId);
+    const pro = cat.staff.find((s) => s.id === b.staffId);
+    const cancelled = b.status === 'Cancelada';
+    box.innerHTML = `
+      <span class="cita-status ${cancelled ? 'off' : 'on'}">${esc(t(cancelled ? 'cita.cancelled' : 'cita.confirmed'))}</span>
+      <h1>${esc(t('cita.title'))}</h1>
+      <p class="cita-date">${esc(formatDateLong(b.date, L))} · <span class="num">${esc(b.time)}</span></p>
+      <dl>
+        <div><dt>${esc(t('modal.done.service'))}</dt><dd>${esc(svc ? svc.name[L] || svc.name.es : b.serviceId)}</dd></div>
+        <div><dt>${esc(t('modal.done.staff'))}</dt><dd>${esc(pro ? pro.name : '')}</dd></div>
+        <div><dt>${esc(t('modal.done.code'))}</dt><dd>${esc(b.code)}</dd></div>
+      </dl>
+      ${cancelled
+        ? `<p class="cita-msg">${esc(t('cita.cancelledMsg'))}</p>
+           <div class="cita-actions"><button type="button" class="btn btn-mint" data-book data-service="${esc(b.serviceId)}">${esc(t('cita.rebook'))}</button>
+           <a class="btn btn-white" href="${esc(cfg.home)}">${esc(t('cita.home'))}</a></div>`
+        : `${cancelError ? `<p class="cita-error" role="alert">${esc(cancelError)}</p>` : ''}
+           <button type="button" class="cita-cancel" data-cancel ${busy ? 'disabled' : ''}>
+             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg>${esc(t(cancelError ? 'err.retry' : 'cita.cancel'))}</button>
+           <p class="cita-muted">${esc(t('cita.cancelHint'))}</p>`}`;
+  }
+
+  async function load() {
+    loadError = '';
+    box.innerHTML = `<p class="cita-muted">${esc(t('cita.loading'))}</p>`;
+    if (!code || !token) { booking = null; render(); return; }
+    try {
+      cat = await getCatalog();                // nombres de servicio/profesional y teléfono, de la hoja
+      booking = await getBooking(code, token); // null = la cita no existe
+    } catch (err) {
+      loadError = errMsg(err);
+    }
+    render();
+  }
+
+  box.addEventListener('click', async (e) => {
+    const el = e.target as HTMLElement;
+    if (el.closest('[data-retry]')) { await load(); return; }
+    if (!el.closest('[data-cancel]') || busy || !booking) return;
+    busy = true; cancelError = ''; render();
+    try {
+      const ok = await cancelBooking(code, token);
+      if (ok) booking.status = 'Cancelada';
+      else booking = null; // la cita ya no existe en la hoja
+    } catch (err) {
+      cancelError = `${t('cita.cancelError')} ${errMsg(err)}`;
+    }
+    busy = false;
+    render();
+  });
+
+  load();
+</script>
+
+<style is:global>
+  .cita-wrap { background-image: var(--mint); min-height: 70vh; display: flex; align-items: center; justify-content: center; padding: 72px 20px; }
+  .cita-card { width: 100%; max-width: 620px; background: #FFFFFF; border-radius: 28px; padding: clamp(28px, 5vw, 48px); display: flex; flex-direction: column; gap: 20px; box-shadow: 0 40px 80px -50px rgba(20,60,50,0.6); }
+  .cita-card h1 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: clamp(40px, 6vw, 56px); line-height: 1; }
+  .cita-date { margin: 0; font-size: 24px; font-weight: 500; }
+  .cita-date .num { font-family: var(--font-num); font-weight: 700; }
+  .cita-card dl { margin: 0; display: grid; gap: 0; border-top: 1px solid #111111; }
+  .cita-card dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid #E4E1DD; }
+  .cita-card dt { font-size: 18px; color: #5E5B64; }
+  .cita-card dd { margin: 0; font-size: 20px; font-weight: 500; text-align: right; }
+  .cita-status { align-self: flex-start; font-size: 15px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 6px 14px; border-radius: 999px; }
+  .cita-status.on { background: #DDF3E6; color: #0F5A2E; }
+  .cita-status.off { background: #FBE3EE; color: #8A0A47; }
+  .cita-muted { margin: 0; font-size: 17px; color: #5E5B64; }
+  .cita-msg { margin: 0; font-size: 20px; }
+  .cita-error { margin: 0; padding: 14px 18px; border-radius: 12px; background: #FDF0F5; border: 1px solid #F2C6D9; color: #6E1240; font-size: 17px; line-height: 1.5; }
+  .cita-cancel { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 58px; border-radius: 999px; border: 1.5px solid #C2185B; background: #FFFFFF; color: #A50C55; font: inherit; font-size: 18px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+  .cita-cancel:hover { background: #FDF0F5; }
+  .cita-cancel:disabled { opacity: 0.5; }
+  .cita-actions { display: flex; flex-wrap: wrap; gap: 14px; }
+</style>

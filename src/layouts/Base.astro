@@ -1,0 +1,71 @@
+---
+import '../styles/global.css';
+import type { Lang } from '../lib/booking-core';
+import { useTranslations, localePath, ui } from '../i18n/ui';
+
+/** titleSalon: título de la página; al cargar los datos de la hoja se le añade « — nombre del salón». */
+interface Props { lang: Lang; title?: string; titleSalon?: string; description?: string; path?: string; noindex?: boolean }
+const { lang, title, titleSalon, description, path = '/', noindex = false } = Astro.props;
+const t = useTranslations(lang);
+const site = Astro.site ?? new URL('https://aurorasalon.es');
+const langs: Lang[] = ['es', 'en', 'ru'];
+// Textos de carga y error que usa src/lib/site-data.ts en el navegador
+const siteI18n = Object.fromEntries(
+  (Object.keys(ui[lang]) as (keyof (typeof ui)['es'])[]).filter((k) => k.startsWith('err.') || k.startsWith('data.')).map((k) => [k, ui[lang][k]])
+);
+---
+<!doctype html>
+<html lang={lang} data-title-salon={titleSalon}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script is:inline>document.documentElement.classList.add('js');</script>
+    <title>{titleSalon ?? title ?? t('meta.title')}</title>
+    <meta name="description" content={description ?? t('meta.description')} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    {langs.map((l) => <link rel="alternate" hreflang={l} href={new URL(localePath(l, path), site).toString()} />)}
+    <meta property="og:title" content={title ?? t('meta.title')} />
+    <meta property="og:description" content={description ?? t('meta.description')} />
+    <meta property="og:image" content={new URL('/images/cliente-cafe.jpg', site).toString()} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Italiana&family=Source+Sans+3:wght@400;500;600;700&family=Comfortaa:wght@500;700&family=Petit+Formal+Script&display=swap" />
+  </head>
+  <body>
+    <slot />
+    <script type="application/json" id="site-i18n" set:html={JSON.stringify(siteI18n)}></script>
+    <script>
+      // Carga los datos de Google Sheets en todas las páginas (una sola petición, compartida).
+      import { onSiteData } from '../lib/site-data';
+      onSiteData({ ok: () => {} });
+
+      // Animaciones al hacer scroll: añade .is-in cuando el elemento entra en pantalla.
+      const stagger = (root: ParentNode) => root.querySelectorAll<HTMLElement>('[data-stagger]').forEach((box) => {
+        Array.from(box.children).forEach((child, i) => {
+          const el = child as HTMLElement;
+          if (!el.hasAttribute('data-reveal')) el.setAttribute('data-reveal', box.dataset.stagger || 'up');
+          el.style.setProperty('--rd', `${Math.min(i, 6) * 0.12}s`);
+        });
+      });
+      stagger(document);
+
+      const done = (el: HTMLElement) => {
+        // Al terminar, se quita el atributo para que el elemento recupere sus efectos hover normales.
+        setTimeout(() => { el.removeAttribute('data-reveal'); el.classList.remove('is-in'); el.style.removeProperty('--rd'); }, 2600);
+      };
+      const els = document.querySelectorAll<HTMLElement>('[data-reveal]');
+      if (!('IntersectionObserver' in window)) els.forEach((el) => el.classList.add('is-in'));
+      else {
+        const io = new IntersectionObserver((entries) => entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          const el = e.target as HTMLElement;
+          el.classList.add('is-in');
+          io.unobserve(el);
+          done(el);
+        }), { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+        els.forEach((el) => io.observe(el));
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+---
+import Base from '../layouts/Base.astro';
+import Header from './Header.astro';
+import Hero from './Hero.astro';
+import Services from './Services.astro';
+import BookingSection from './BookingSection.astro';
+import Salon from './Salon.astro';
+import Contact from './Contact.astro';
+import Footer from './Footer.astro';
+import BookingModal from './BookingModal.astro';
+import FloatingBook from './FloatingBook.astro';
+import type { Lang } from '../lib/booking-core';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+---
+<Base lang={lang} path="/">
+  <Header lang={lang} path="/" />
+  <main>
+    <Hero lang={lang} />
+    <Services lang={lang} />
+    <BookingSection lang={lang} />
+    <Salon lang={lang} />
+    <Contact lang={lang} />
+  </main>
+  <Footer lang={lang} />
+  <FloatingBook lang={lang} />
+  <BookingModal lang={lang} />
+</Base>

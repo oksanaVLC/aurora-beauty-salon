@@ -1,0 +1,39 @@
+---
+import type { Lang } from '../lib/booking-core';
+import { useTranslations } from '../i18n/ui';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+<div class="bg-mint">
+  <section id="nosotros" class="container section salon-grid">
+    <div class="salon-photos">
+      <img data-reveal="image" src="/images/estilista-espejo.jpg" alt={t('salon.photo1')} loading="lazy" />
+      <img data-reveal="image" style="--rd: .25s" src="/images/facial-perfil.jpg" alt={t('salon.photo2')} loading="lazy" />
+    </div>
+    <div class="salon-copy" data-stagger>
+      <span class="eyebrow">{t('salon.eyebrow')}</span>
+      <h2 class="h2">{t('salon.title')}</h2>
+      <p>{t('salon.text')}</p>
+      <!-- Equipo: pestaña «Equipo» de la hoja (solo profesionales activas) -->
+      <div class="team" data-team data-lang={lang}><p class="data-status" data-data-status></p></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  import { onSiteData } from '../lib/site-data';
+  import { esc } from '../lib/format';
+  import type { Lang } from '../lib/booking-core';
+
+  const team = document.querySelector<HTMLElement>('[data-team]')!;
+  const lang = (team.dataset.lang || 'es') as Lang;
+  onSiteData({
+    ok: (cat) => {
+      team.querySelectorAll('.team-member').forEach((el) => el.remove());
+      team.insertAdjacentHTML('beforeend', cat.staff.map((s) =>
+        `<span class="team-member"><span class="who">${esc(s.name)}</span><span class="role">${esc(s.role[lang] || s.role.es)}</span></span>`).join(''));
+    },
+    fail: () => team.querySelectorAll('.team-member').forEach((el) => el.remove()),
+  });
+</script>

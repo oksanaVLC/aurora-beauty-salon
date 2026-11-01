@@ -1,0 +1,88 @@
+---
+import type { Lang } from '../lib/booking-core';
+import { useTranslations } from '../i18n/ui';
+interface Props { lang: Lang }
+const t = useTranslations(Astro.props.lang);
+const wd = t('wd.short').split('|');
+const steps = [t('modal.step.service'), t('modal.step.staff'), t('modal.step.date'), t('modal.step.data'), t('modal.step.done')];
+---
+<div class="bg-grey">
+  <section id="reservar" class="container section booking-grid">
+    <div style="display: flex; flex-direction: column; gap: 24px" data-stagger>
+      <span class="eyebrow">{t('booking.eyebrow')}</span>
+      <h2 class="h2">{t('booking.title')}</h2>
+      <ol class="booking-steps">
+        <li><span class="n">1</span>{t('booking.step1')}</li>
+        <li><span class="n">2</span>{t('booking.step2')}</li>
+        <li><span class="n">3</span>{t('booking.step3')}</li>
+      </ol>
+    </div>
+
+    <!-- Vista previa del modal: cualquier clic abre el motor de reservas real -->
+    <div class="preview" data-reveal="zoom" style="--rd: .2s" data-book role="button" tabindex="0" aria-label={t('booking.cta')}>
+      <h3>{t('modal.title')}</h3>
+      <ol class="mini-steps" aria-hidden="true">
+        {steps.map((s, i) => (
+          <li class={i <= 2 ? 'on' : ''}><span class="track"><span class="dot"></span><span class={i < 2 ? 'line on' : 'line'}></span></span><span class="lbl">{s}</span></li>
+        ))}
+      </ol>
+      <!-- Ejemplo con el primer servicio visible de la hoja (y su primera profesional) -->
+      <div class="preview-pick" aria-hidden="true" data-needs-data hidden data-preview data-lang={Astro.props.lang} data-label-min={t('services.min')} data-label-from={t('services.from')}>
+        <span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 18px; font-weight: 500" data-preview-name></span><span style="font-size: 16px; color: #5E5B64" data-preview-meta></span></span>
+      </div>
+      <div class="preview-days" aria-hidden="true">
+        {[3, 4, 5, 6, 7, 8].map((n, i) => <span class={i === 1 ? 'on' : ''}><span class="wd">{wd[i + 1]}</span><span class="num">{n}</span></span>)}
+      </div>
+      <div class="preview-times" aria-hidden="true">
+        {['10:00', '11:30', '13:00', '16:30', '17:15', '18:45'].map((h, i) => <span class={i === 3 ? 'on' : i === 2 ? 'off' : ''}>{h}</span>)}
+      </div>
+      <span class="preview-cta">{t('booking.cta')}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"></path></svg>
+      </span>
+    </div>
+  </section>
+</div>
+
+<script>
+  import { onSiteData } from '../lib/site-data';
+  import type { Lang } from '../lib/booking-core';
+
+  const box = document.querySelector<HTMLElement>('[data-preview]')!;
+  const lang = (box.dataset.lang || 'es') as Lang;
+  onSiteData({
+    ok: (cat) => {
+      const svc = cat.services.find((s) => s.visible && cat.staff.some((p) => p.services.includes(s.id)));
+      if (!svc) { box.remove(); return; }
+      const pro = cat.staff.find((p) => p.services.includes(svc.id))!;
+      box.querySelector('[data-preview-name]')!.textContent = `${svc.name[lang] || svc.name.es} · ${pro.name.split(' ')[0]}`;
+      box.querySelector('[data-preview-meta]')!.textContent = `${svc.duration} ${box.dataset.labelMin} · ${box.dataset.labelFrom} ${svc.price} €`;
+    },
+  });
+</script>
+
+<style>
+  .preview { justify-self: end; width: 100%; max-width: 500px; background: #FFFFFF; border-radius: 6px; padding: 32px; display: flex; flex-direction: column; gap: 22px; color: #111111; box-shadow: 0 40px 90px -40px rgba(20,18,26,0.45); cursor: pointer; transition: transform .2s ease; }
+  .preview:hover { transform: translateY(-3px); }
+  .preview h3 { margin: 0; text-align: center; font-family: var(--font-display); font-weight: 400; font-size: 36px; line-height: 1; }
+  .mini-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .mini-steps li { display: flex; flex-direction: column; gap: 8px; font-size: 15px; color: #8C8890; }
+  .mini-steps li.on { color: #111111; }
+  .mini-steps .track { display: flex; align-items: center; }
+  .mini-steps .dot { width: 8px; height: 8px; border-radius: 50%; background: #D6D2CD; flex-shrink: 0; }
+  .mini-steps li.on .dot { background: #111111; }
+  .mini-steps .line { flex: 1 1 auto; height: 1.5px; background: #E4E1DD; }
+  .mini-steps .line.on { background: #111111; }
+  .mini-steps .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 6px; }
+  .preview-pick { padding: 14px 16px; border-radius: 4px; background: #F6F4F1; border: 1px solid #E4E1DD; }
+  .preview-days { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+  .preview-days > span { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 0; border-radius: 4px; border: 1px solid #E4E1DD; }
+  .preview-days > span.on { background: #111111; color: #FFFFFF; border-color: #111111; }
+  .preview-days .wd { font-size: 16px; font-weight: 500; }
+  .preview-days .num { font-family: var(--font-num); font-weight: 700; font-size: 20px; }
+  .preview-times { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .preview-times > span { text-align: center; font-size: 18px; font-weight: 500; padding: 13px 0; border-radius: 4px; border: 1px solid #E4E1DD; }
+  .preview-times > span.on { background: #111111; color: #FFFFFF; border-color: #111111; }
+  .preview-times > span.off { border-style: dashed; color: #8C8890; text-decoration: line-through; font-weight: 400; }
+  .preview-cta { display: flex; justify-content: center; align-items: center; gap: 12px; min-height: 54px; border-radius: 2px; background: #111111; color: #FFFFFF; font-size: 17px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; }
+  @media (max-width: 900px) { .preview { justify-self: stretch; max-width: none; } }
+</style>

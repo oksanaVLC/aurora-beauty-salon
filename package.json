@@ -1,0 +1,16 @@
+{
+  "name": "aurora-beauty-salon",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "test": "node --test --disable-warning=ExperimentalWarning \"tests/*.test.mts\""
+  },
+  "dependencies": {
+    "astro": "^7.4.4"
+  }
+}

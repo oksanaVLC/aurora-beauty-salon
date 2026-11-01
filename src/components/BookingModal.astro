@@ -1,0 +1,541 @@
+---
+/**
+ * Motor de reservas: modal de 5 pasos (servicio → profesional → fecha y hora → datos → confirmación).
+ * Se abre con cualquier elemento que tenga el atributo `data-book`
+ * (opcional `data-service="id"` para entrar con un servicio ya elegido).
+ */
+import type { Lang } from '../lib/booking-core';
+import { ui, localePath } from '../i18n/ui';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), privacyPath: localePath(lang, '/privacidad') };
+---
+<dialog id="booking" class="bk-dialog" aria-labelledby="bk-title">
+  <div class="bk-modal">
+    <div class="bk-watermark" aria-hidden="true">
+      <svg width="76" height="76" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="wmG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="rgb(182, 242, 196)"></stop><stop offset="0.35" stop-color="rgb(143, 233, 196)"></stop><stop offset="0.7" stop-color="rgb(140, 224, 224)"></stop><stop offset="1" stop-color="rgb(191, 234, 252)"></stop></linearGradient></defs><g stroke="url(#wmG)" stroke-width="2.4"><path d="M6 46 V26 A18 18 0 0 1 42 26 V46"></path><path d="M11 46 V26 A13 13 0 0 1 37 26 V46"></path><path d="M16 46 V26 A8 8 0 0 1 32 26 V46"></path></g><circle cx="24" cy="26" r="3.4" fill="url(#wmG)"></circle></svg>
+      <span>AURORA</span>
+    </div>
+    <button type="button" class="bk-close" data-bk-close aria-label={ui[lang]['modal.close']}>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+    </button>
+    <h2 id="bk-title" class="bk-title">{ui[lang]['modal.title']}</h2>
+    <ol class="bk-steps" data-bk-steps aria-label="Pasos"></ol>
+    <div class="bk-body" data-bk-body aria-live="polite"></div>
+    <div class="bk-foot" data-bk-foot></div>
+  </div>
+</dialog>
+<script type="application/json" id="bk-config" set:html={JSON.stringify(config)}></script>
+
+<script>
+  import { getCatalog, getBookableDays, getSlots, book, ApiError } from '../lib/booking-api';
+  import { reloadSiteData, telHref, mapsQuery } from '../lib/site-data';
+  import { staffFor, type Booking, type Catalog, type Lang, type Slot } from '../lib/booking-core';
+  import { formatDateLong, formatDayParts, downloadIcs, esc } from '../lib/format';
+
+  const cfg = JSON.parse(document.getElementById('bk-config')!.textContent!) as {
+    lang: Lang; dict: Record<string, string>; citaPath: string; privacyPath: string;
+  };
+  const L = cfg.lang;
+  const t = (k: string, vars: Record<string, string | number> = {}) =>
+    Object.entries(vars).reduce((s, [a, b]) => s.replace(`{${a}}`, String(b)), cfg.dict[k] ?? k);
+
+  const dialog = document.getElementById('booking') as HTMLDialogElement;
+  const elSteps = dialog.querySelector<HTMLElement>('[data-bk-steps]')!;
+  const elBody = dialog.querySelector<HTMLElement>('[data-bk-body]')!;
+  const elFoot = dialog.querySelector<HTMLElement>('[data-bk-foot]')!;
+
+  interface State {
+    step: number;
+    serviceId: string;
+    staffId: string; // 'any' o id
+    days: string[];
+    date: string;
+    slots: Slot[];
+    loadingSlots: boolean;
+    time: string;
+    form: { name: string; email: string; phone: string; notes: string; privacy: boolean };
+    errors: Record<string, string>;
+    alert: string;
+    sending: boolean;
+    booking: Booking | null;
+    loadingCat: boolean;
+    fatal: string; // no se pudo leer la hoja: se muestra el error y no se puede reservar
+    slotsError: string;
+  }
+
+  let cat: Catalog;
+  let S: State = fresh();
+
+  function fresh(): State {
+    return {
+      step: 0, serviceId: '', staffId: 'any', days: [], date: '', slots: [], loadingSlots: false, time: '',
+      form: { name: '', email: '', phone: '', notes: '', privacy: false }, errors: {}, alert: '', sending: false, booking: null,
+      loadingCat: false, fatal: '', slotsError: ''
+    };
+  }
+
+  const services = () => cat.services.filter((s) => s.visible);
+  const service = () => cat.services.find((s) => s.id === S.serviceId)!;
+  const staffName = (id: string | null) => cat.staff.find((s) => s.id === id)?.name ?? '';
+
+  /** Mensaje real según el tipo de error (sin conexión, Google tarda, hoja ocupada, error del servidor…). */
+  function errMsg(err: unknown): string {
+    const kind = err instanceof ApiError ? err.kind : 'network';
+    console.error(err);
+    return t(`err.${kind}`);
+  }
+  /** Teléfono del salón (de la hoja). Si la hoja no ha cargado no lo tenemos: no se muestra el botón de llamar. */
+  const tel = () => (cat ? telHref(cat.salon.phone) : '');
+
+  /* ------------------------------------------------------------ abrir / cerrar */
+
+  let pendingService: string | undefined;
+  async function open(serviceId?: string) {
+    pendingService = serviceId;
+    S = fresh();
+    S.loadingCat = true;
+    render();
+    if (!dialog.open) dialog.showModal();
+    document.documentElement.style.overflow = 'hidden';
+    try {
+      cat = await getCatalog();
+      reloadSiteData(); // por si las secciones de la página habían fallado antes: usan la misma carga
+    } catch (err) {
+      S.loadingCat = false;
+      S.fatal = errMsg(err);
+      render();
+      return;
+    }
+    S.loadingCat = false;
+    const list = services();
+    S.serviceId = serviceId && list.some((s) => s.id === serviceId) ? serviceId : list[0]?.id ?? '';
+    if (serviceId && S.serviceId === serviceId) S.step = 1;
+    render();
+  }
+  function close() { dialog.close(); }
+  dialog.addEventListener('close', () => { document.documentElement.style.overflow = ''; });
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) close(); }); // clic fuera
+  dialog.querySelector('[data-bk-close]')!.addEventListener('click', close);
+
+  document.addEventListener('click', (e) => {
+    const trigger = (e.target as HTMLElement).closest<HTMLElement>('[data-book]');
+    if (!trigger || dialog.contains(trigger)) return;
+    e.preventDefault();
+    open(trigger.dataset.service);
+  });
+  document.addEventListener('keydown', (e) => {
+    const el = e.target as HTMLElement;
+    if ((e.key === 'Enter' || e.key === ' ') && el.matches('[data-book][role="button"]')) { e.preventDefault(); open(el.dataset.service); }
+  });
+  if (new URLSearchParams(location.search).has('reservar')) open(new URLSearchParams(location.search).get('reservar') || undefined);
+
+  /* ------------------------------------------------------------ navegación */
+
+  async function goTo(step: number) {
+    S.step = step;
+    S.alert = '';
+    if (step === 2) await loadDays();
+    render();
+    elBody.scrollTop = 0;
+  }
+
+  async function loadDays() {
+    try {
+      S.days = await getBookableDays(S.serviceId, S.staffId, 14);
+    } catch (err) {
+      S.days = []; S.date = ''; S.slots = []; S.slotsError = errMsg(err);
+      return;
+    }
+    if (!S.days.includes(S.date)) { S.date = S.days[0] ?? ''; S.time = ''; }
+    await loadSlots();
+  }
+
+  async function loadSlots() {
+    if (!S.date) { S.slots = []; return; }
+    S.loadingSlots = true;
+    S.slotsError = '';
+    render();
+    try {
+      S.slots = await getSlots(S.serviceId, S.staffId, S.date);
+    } catch (err) {
+      S.slots = [];
+      S.slotsError = errMsg(err); // nunca «no quedan huecos» si en realidad no hemos podido consultarlos
+    }
+    S.loadingSlots = false;
+    if (!S.slots.some((s) => s.time === S.time && s.staffId)) S.time = '';
+    render();
+  }
+
+  function validate(): boolean {
+    const f = S.form;
+    const e: Record<string, string> = {};
+    if (!f.name.trim()) e.name = t('modal.err.required');
+    if (!f.email.trim()) e.email = t('modal.err.required');
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.email.trim())) e.email = t('modal.err.email');
+    if (!f.phone.trim()) e.phone = t('modal.err.required');
+    else if (f.phone.replace(/\D/g, '').length < 9) e.phone = t('modal.err.phone');
+    if (!f.privacy) e.privacy = t('modal.err.privacy');
+    S.errors = e;
+    return !Object.keys(e).length;
+  }
+
+  async function submit() {
+    readForm();
+    if (!validate()) { render(); focusFirstError(); return; }
+    S.sending = true; S.alert = '';
+    render();
+    const res = await book({
+      serviceId: S.serviceId, staffId: S.staffId, date: S.date, time: S.time,
+      name: S.form.name.trim(), email: S.form.email.trim(), phone: S.form.phone.trim(), notes: S.form.notes.trim(), lang: L
+    });
+    S.sending = false;
+    if (res.ok) {
+      S.booking = res.booking;
+      S.step = 4;
+      render();
+      return;
+    }
+    if (res.error === 'slot_taken') {
+      S.step = 2;
+      S.time = '';
+      await loadSlots();
+      S.alert = t('modal.err.taken');
+    } else if (res.error === 'unknown') {
+      S.alert = t('modal.err.unknown');
+    } else if (res.error === 'invalid') {
+      S.alert = t('modal.err.invalid');
+    } else {
+      S.alert = t(`err.${res.error}`);
+    }
+    render();
+  }
+
+  function readForm() {
+    const q = (n: string) => elBody.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${n}"]`);
+    if (!q('name')) return;
+    S.form = {
+      name: q('name')!.value, email: q('email')!.value, phone: q('phone')!.value, notes: q('notes')!.value,
+      privacy: (q('privacy') as HTMLInputElement).checked
+    };
+  }
+  function focusFirstError() {
+    const first = Object.keys(S.errors)[0];
+    elBody.querySelector<HTMLElement>(`[name="${first}"]`)?.focus();
+  }
+
+  /* ------------------------------------------------------------ eventos (delegados) */
+
+  elBody.addEventListener('click', async (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
+    if (!b || (b as HTMLButtonElement).disabled) return;
+    const v = b.dataset.val!;
+    switch (b.dataset.act) {
+      case 'service': S.serviceId = v; S.staffId = 'any'; render(); break;
+      case 'any': S.staffId = 'any'; await goTo(2); break;
+      case 'staff': S.staffId = S.staffId === v ? 'any' : v; render(); break;
+      case 'day': S.date = v; S.time = ''; S.alert = ''; await loadSlots(); break;
+      case 'time': S.time = v; S.alert = ''; render(); break;
+      case 'ics': downloadIcs(S.booking!, service(), cat.salon.name, mapsQuery(cat), L); break;
+      case 'retry-open': await open(pendingService); break;
+      case 'retry-slots': if (S.date) await loadSlots(); else { await loadDays(); render(); } break;
+      case 'scroll-days': elBody.querySelector('.bk-days')?.scrollBy({ left: Number(v) * 300, behavior: 'smooth' }); break;
+    }
+  });
+  elBody.addEventListener('input', (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.name && S.errors[el.name]) {
+      delete S.errors[el.name];
+      el.closest('.bk-field')?.classList.remove('has-error');
+      el.closest('.bk-field')?.querySelector('.bk-err')?.remove();
+    }
+  });
+
+  elFoot.addEventListener('click', async (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-nav]');
+    if (!b || (b as HTMLButtonElement).disabled) return;
+    const nav = b.dataset.nav;
+    if (nav === 'back') { readForm(); await goTo(Math.max(0, S.step - 1)); }
+    if (nav === 'next') {
+      if (S.step === 2 && !S.time) { S.alert = t('modal.date.pick'); render(); return; }
+      await goTo(S.step + 1);
+    }
+    if (nav === 'confirm') await submit();
+    if (nav === 'close') close();
+  });
+
+  /* ------------------------------------------------------------ render */
+
+  function render() {
+    const labels = ['modal.step.service', 'modal.step.staff', 'modal.step.date', 'modal.step.data', 'modal.step.done'];
+    elSteps.innerHTML = labels.map((k, i) => `
+      <li class="${i <= S.step ? 'on' : ''} ${i === S.step ? 'current' : ''}" ${i === S.step ? 'aria-current="step"' : ''}>
+        <span class="bk-track"><span class="bk-dot"></span><span class="bk-line ${i < S.step ? 'on' : ''}"></span></span>
+        <span class="bk-lbl">${esc(t(k))}</span>
+      </li>`).join('');
+    elBody.innerHTML = S.loadingCat ? `<p class="bk-muted">${esc(t('modal.date.loading'))}</p>`
+      : S.fatal ? renderFatal()
+      : [renderService, renderStaff, renderDate, renderData, renderDone][S.step]();
+    elFoot.innerHTML = renderFoot();
+  }
+
+  const arrow = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"></path></svg>';
+  const alertBox = () => (S.alert ? `<p class="bk-alert" role="alert">${esc(S.alert)}</p>` : '');
+
+  function errorBox(msg: string, retryAct: string) {
+    return `<div class="bk-error" role="alert">
+        <p>${esc(msg)}</p>
+        <div class="bk-error-actions">
+          <button type="button" class="bk-btn dark" data-act="${retryAct}">${esc(t('err.retry'))}</button>
+          ${tel() ? `<a class="bk-btn" href="${tel()}">${esc(t('err.call'))}</a>` : ''}
+        </div>
+      </div>`;
+  }
+  function renderFatal() {
+    return `<div class="bk-head"><h3>${esc(t('err.title'))}</h3></div>${errorBox(S.fatal, 'retry-open')}`;
+  }
+
+  function renderService() {
+    const list = services();
+    return `
+      <div class="bk-head"><h3>${esc(t('modal.service.title'))}</h3><span class="bk-muted">${esc(t('modal.service.count', { n: list.length }))}</span></div>
+      <div class="bk-svc-list bk-scroll" role="radiogroup" aria-label="${esc(t('modal.step.service'))}" tabindex="0">
+        ${list.map((s) => `
+          <button type="button" role="radio" aria-checked="${s.id === S.serviceId}" class="bk-opt ${s.id === S.serviceId ? 'sel' : ''}" data-act="service" data-val="${esc(s.id)}">
+            <span class="bk-radio"></span>
+            <span class="bk-grow"><span class="bk-strong">${esc(s.name[L] || s.name.es)}</span><span class="bk-muted">${s.duration} ${esc(t('services.min'))}</span></span>
+            <span class="bk-strong bk-nowrap">${esc(t('services.from'))} ${s.price} €</span>
+          </button>`).join('')}
+      </div>`;
+  }
+
+  function renderStaff() {
+    const pros = staffFor(cat, S.serviceId);
+    const any = S.staffId === 'any';
+    return `
+      <div class="bk-head bk-head-left"><h3>${esc(t('modal.staff.title'))}</h3><span class="bk-chip">${esc(t('modal.staff.optional'))}</span></div>
+      <button type="button" class="bk-opt bk-any ${any ? 'sel' : ''}" data-act="any">
+        <span class="bk-grow"><span class="bk-strong" style="font-size:19px;font-weight:600">${esc(t('modal.staff.anyTitle'))}</span><span class="bk-muted">${esc(t('modal.staff.anyText'))}</span></span>
+        <span class="bk-cta-mini">${esc(t('modal.staff.continue'))}${arrow}</span>
+      </button>
+      <span class="bk-muted">${esc(t('modal.staff.or'))}</span>
+      <div class="bk-staff" role="radiogroup" aria-label="${esc(t('modal.step.staff'))}">
+        ${pros.map((p) => `
+          <button type="button" role="radio" aria-checked="${S.staffId === p.id}" class="bk-opt bk-pro ${S.staffId === p.id ? 'sel' : ''}" data-act="staff" data-val="${esc(p.id)}">
+            <span class="bk-avatar">${esc(p.name.charAt(0))}</span>
+            <span class="bk-strong">${esc(p.name)}</span>
+            <span class="bk-muted">${esc(p.role[L] || p.role.es)}</span>
+          </button>`).join('')}
+      </div>`;
+  }
+
+  function renderDate() {
+    const svc = service();
+    const who = S.staffId === 'any' ? t('modal.done.any') : staffName(S.staffId);
+    const month = S.date ? formatDayParts(S.date, L).monthLong : '';
+    const days = S.days.map((d) => {
+      const p = formatDayParts(d, L);
+      const on = d === S.date;
+      return `<button type="button" role="radio" aria-checked="${on}" class="bk-day ${on ? 'sel' : ''}" data-act="day" data-val="${d}">
+        <span class="bk-wd">${esc(p.wdShort)}</span><span class="bk-num">${p.day}</span><span class="bk-mon">${esc(p.monShort)}</span></button>`;
+    }).join('');
+    let times = '';
+    if (S.loadingSlots) times = `<p class="bk-muted">${esc(t('modal.date.loading'))}</p>`;
+    else if (S.slotsError) times = errorBox(S.slotsError, 'retry-slots');
+    else if (!S.slots.some((s) => s.staffId)) times = `<p class="bk-muted">${esc(t('modal.date.none'))}</p>`;
+    else times = `<div class="bk-times" role="radiogroup" aria-label="${esc(t('modal.step.date'))}">${S.slots.map((s) =>
+      s.staffId
+        ? `<button type="button" role="radio" aria-checked="${s.time === S.time}" class="bk-time ${s.time === S.time ? 'sel' : ''}" data-act="time" data-val="${s.time}">${s.time}</button>`
+        : `<button type="button" class="bk-time busy" disabled aria-label="${s.time}, ${esc(t('modal.date.busy'))}">${s.time}</button>`
+    ).join('')}</div>`;
+    return `
+      <div class="bk-summary"><span class="bk-strong">${esc(svc.name[L] || svc.name.es)} · ${esc(who)}</span><span class="bk-muted">${svc.duration} ${esc(t('services.min'))} · ${esc(t('services.from'))} ${svc.price} €</span></div>
+      <div class="bk-head"><h3>${esc(t('modal.date.title'))}</h3><span class="bk-muted bk-cap">${esc(month)}</span></div>
+      <div class="bk-days-wrap">
+        <button type="button" class="bk-arrow" data-act="scroll-days" data-val="-1" aria-label="‹">‹</button>
+        <div class="bk-days" role="radiogroup">${days}</div>
+        <button type="button" class="bk-arrow" data-act="scroll-days" data-val="1" aria-label="›">›</button>
+      </div>
+      ${alertBox()}
+      ${times}`;
+  }
+
+  function field(name: string, label: string, type: string, auto: string, required = true) {
+    const err = S.errors[name];
+    const val = esc((S.form as unknown as Record<string, string>)[name] || '');
+    return `<label class="bk-field ${err ? 'has-error' : ''} ${name === 'name' ? 'bk-full' : ''}">
+      <span>${esc(label)}${required ? ' <span class="bk-req" aria-hidden="true">*</span>' : ''}</span>
+      <input name="${name}" type="${type}" autocomplete="${auto}" value="${val}" ${required ? 'required aria-required="true"' : ''} ${err ? 'aria-invalid="true"' : ''}>
+      ${err ? `<span class="bk-err">${esc(err)}</span>` : ''}
+    </label>`;
+  }
+
+  function renderData() {
+    const pErr = S.errors.privacy;
+    return `
+      <div class="bk-narrow">
+        <div class="bk-head"><h3>${esc(t('modal.data.title'))}</h3><span class="bk-muted"><span class="bk-req">*</span> ${esc(t('modal.data.required'))}</span></div>
+        ${alertBox()}
+        <form class="bk-form" novalidate onsubmit="return false">
+          ${field('name', t('modal.data.name'), 'text', 'name')}
+          ${field('email', t('modal.data.email'), 'email', 'email')}
+          ${field('phone', t('modal.data.phone'), 'tel', 'tel')}
+          <label class="bk-field bk-full"><span>${esc(t('modal.data.notes'))}</span>
+            <textarea name="notes" rows="3" placeholder="${esc(t('modal.data.notesPh'))}">${esc(S.form.notes)}</textarea>
+          </label>
+          <label class="bk-check bk-full ${pErr ? 'has-error' : ''}">
+            <input type="checkbox" name="privacy" ${S.form.privacy ? 'checked' : ''} required>
+            <span>${esc(t('modal.data.privacy1'))} <a href="${cfg.privacyPath}" target="_blank" rel="noopener">${esc(t('modal.data.privacy2'))}</a> <span class="bk-req" aria-hidden="true">*</span></span>
+          </label>
+          ${pErr ? `<span class="bk-err bk-full">${esc(pErr)}</span>` : ''}
+        </form>
+      </div>`;
+  }
+
+  function renderDone() {
+    const b = S.booking!;
+    const svc = service();
+    const who = S.staffId === 'any' ? `${staffName(b.staffId)} <span class="bk-muted" style="font-size:20px">(${esc(t('modal.done.any'))})</span>` : esc(staffName(b.staffId));
+    const manage = `${cfg.citaPath}?c=${encodeURIComponent(b.code)}&t=${encodeURIComponent(b.token)}`;
+    return `
+      <div class="bk-done">
+        <span class="bk-check-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10"></path></svg></span>
+        <h3>${esc(t('modal.done.title'))}</h3>
+        <p>${esc(t('modal.done.text'))}</p>
+        ${b.discount ? `<p class="bk-discount">${esc(t('modal.done.discount', { n: b.discount }))}</p>` : ''}
+        <dl>
+          <div><dt>${esc(t('modal.done.service'))}</dt><dd>${esc(svc.name[L] || svc.name.es)} · ${esc(t('services.from'))} ${svc.price} €</dd></div>
+          <div><dt>${esc(t('modal.done.staff'))}</dt><dd>${who}</dd></div>
+          <div><dt>${esc(t('modal.done.when'))}</dt><dd>${esc(formatDateLong(b.date, L))} · ${b.time}</dd></div>
+          <div><dt>${esc(t('modal.done.code'))}</dt><dd>${esc(b.code)}</dd></div>
+        </dl>
+        <a class="bk-link" href="${manage}">${esc(t('modal.done.manage'))}</a>
+      </div>`;
+  }
+
+  function renderFoot() {
+    const back = `<button type="button" class="bk-btn" data-nav="back">${esc(t('modal.back'))}</button>`;
+    const info = `<span class="bk-muted">${esc(t('modal.footer', { n: S.step + 1 }))}</span>`;
+    if (S.loadingCat || S.fatal) return `<span></span><button type="button" class="bk-btn" data-nav="close">${esc(t('modal.close'))}</button>`;
+    switch (S.step) {
+      case 0: return `${info}<button type="button" class="bk-btn dark" data-nav="next" ${S.serviceId ? '' : 'disabled'}>${esc(t('modal.next'))}</button>`;
+      case 1: return `${back}<button type="button" class="bk-btn dark" data-nav="next">${esc(t('modal.next'))}</button>`;
+      case 2: return `${back}<button type="button" class="bk-btn dark" data-nav="next" ${S.time ? '' : 'aria-disabled="true"'}>${esc(t('modal.next'))}</button>`;
+      case 3: return `${back}<button type="button" class="bk-btn dark" data-nav="confirm" ${S.sending ? 'disabled' : ''}>${esc(S.sending ? t('modal.sending') : t('modal.confirm'))}</button>`;
+      default: return `<button type="button" class="bk-btn" data-nav="close">${esc(t('modal.close'))}</button><button type="button" class="bk-btn dark" data-act-foot="ics">${esc(t('modal.done.calendar'))}</button>`;
+    }
+  }
+  elFoot.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('[data-act-foot="ics"]')) downloadIcs(S.booking!, service(), cat.salon.name, mapsQuery(cat), L);
+  });
+</script>
+
+<style is:global>
+  .bk-dialog { border: none; padding: 16px; background: transparent; width: 100%; max-width: 932px; max-height: 100dvh; overflow: visible; }
+  .bk-dialog::backdrop { background: rgba(22, 20, 26, 0.55); backdrop-filter: blur(6px); }
+  .bk-modal {
+    position: relative; isolation: isolate; overflow: auto; max-height: calc(100dvh - 32px);
+    background: #FFFFFF; color: #111111; border-radius: 6px; box-shadow: 0 40px 100px -30px rgba(0,0,0,0.6);
+    padding: clamp(28px, 4vw, 52px) clamp(20px, 5vw, 64px) 28px; display: flex; flex-direction: column; gap: 32px;
+    font-family: var(--font-body);
+  }
+  .bk-modal > * { flex-shrink: 0; }
+  .bk-watermark { position: absolute; z-index: -1; left: 22px; top: 18px; display: flex; align-items: center; gap: 10px; opacity: 0.5; pointer-events: none; }
+  .bk-watermark span { font-family: var(--font-display); font-size: 30px; letter-spacing: 0.26em; line-height: 1; padding-top: 22px; background-image: var(--mint); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  @media (max-width: 720px) { .bk-watermark { display: none; } }
+  .bk-close { position: absolute; top: 14px; right: 14px; width: 44px; height: 44px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .bk-title { margin: 0; text-align: center; font-family: var(--font-display); font-weight: 400; font-size: clamp(38px, 4.4vw, 52px); line-height: 1; }
+
+  .bk-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .bk-steps li { display: flex; flex-direction: column; gap: 12px; color: #9C98A0; font-size: 17px; }
+  .bk-steps li.on { color: #111111; }
+  .bk-steps li.current { font-weight: 500; }
+  .bk-track { display: flex; align-items: center; }
+  .bk-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: #D6D2CD; }
+  .bk-steps li.on .bk-dot { background: #111111; }
+  .bk-line { flex: 1 1 auto; height: 1.5px; background: #E4E1DD; }
+  .bk-line.on { background: #111111; }
+  .bk-lbl { padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 640px) { .bk-lbl { display: none; } .bk-steps li.current .bk-lbl { display: block; overflow: visible; } }
+
+  .bk-body { min-height: 360px; display: flex; flex-direction: column; gap: 18px; }
+  .bk-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .bk-head-left { justify-content: flex-start; align-items: center; }
+  .bk-head h3 { margin: 0; font-size: 24px; font-weight: 400; }
+  .bk-muted { font-size: 16px; color: #5E5B64; }
+  .bk-cap { text-transform: capitalize; font-size: 17px; }
+  .bk-strong { font-size: 17px; font-weight: 500; }
+  .bk-nowrap { white-space: nowrap; }
+  .bk-grow { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; text-align: left; }
+  .bk-chip { font-size: 14px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; background: #F2EFEB; color: #5E5B64; }
+
+  .bk-opt { font: inherit; cursor: pointer; display: flex; align-items: center; gap: 14px; padding: 16px 18px; border-radius: 4px; color: #111111; border: 1px solid #E4E1DD; background: #FFFFFF; text-align: left; }
+  .bk-opt:hover { border-color: #B9B5B0; }
+  .bk-opt.sel { border: 1.5px solid #111111; background: #F6F4F1; }
+  .bk-radio { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid #B9B5B0; }
+  .bk-opt.sel .bk-radio { border: 6px solid #111111; }
+  .bk-svc-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 10px; max-height: 330px; overflow-y: auto; padding: 2px 12px 2px 2px; align-content: start; }
+  .bk-scroll { scrollbar-width: thin; scrollbar-color: #111111 #EEEBE7; }
+  .bk-scroll::-webkit-scrollbar { width: 8px; }
+  .bk-scroll::-webkit-scrollbar-track { background: #EEEBE7; border-radius: 8px; }
+  .bk-scroll::-webkit-scrollbar-thumb { background: #111111; border-radius: 8px; }
+
+  .bk-any { justify-content: space-between; padding: 20px 24px; }
+  .bk-cta-mini { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
+  .bk-staff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 10px; }
+  .bk-pro { flex-direction: column; text-align: center; padding: 22px 12px; gap: 10px; }
+  .bk-avatar { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 28px; background: #F2EFEB; }
+
+  .bk-summary { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border-radius: 4px; background: #F6F4F1; border: 1px solid #E4E1DD; }
+  .bk-days-wrap { display: flex; align-items: center; gap: 6px; }
+  .bk-arrow { flex-shrink: 0; width: 40px; height: 40px; border: none; background: transparent; cursor: pointer; font-size: 34px; line-height: 1; color: #111111; }
+  .bk-days { flex: 1 1 auto; display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 2px; }
+  .bk-days::-webkit-scrollbar { display: none; }
+  .bk-day { font: inherit; flex: 0 0 calc((100% - 48px) / 7); min-width: 74px; scroll-snap-align: start; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 0; border-radius: 4px; border: 1px solid #E4E1DD; background: #FFFFFF; color: #111111; }
+  .bk-day.sel { background: #111111; color: #FFFFFF; border-color: #111111; }
+  .bk-wd { font-size: 16px; font-weight: 500; }
+  .bk-num { font-family: var(--font-num); font-size: 22px; font-weight: 700; }
+  .bk-mon { font-size: 14px; opacity: 0.75; }
+  .bk-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  .bk-time { font: inherit; font-size: 18px; font-weight: 500; cursor: pointer; padding: 14px 0; border-radius: 4px; border: 1px solid #E4E1DD; background: #FFFFFF; color: #111111; }
+  .bk-time.sel { background: #111111; color: #FFFFFF; border-color: #111111; }
+  .bk-time.busy { cursor: default; border-style: dashed; border-color: #D6D2CD; background: transparent; color: #8C8890; text-decoration: line-through; font-weight: 400; }
+  .bk-alert { margin: 0; padding: 12px 16px; border-radius: 4px; background: #FBE3EE; color: #8A0A47; font-size: 16px; font-weight: 500; }
+
+  .bk-narrow { max-width: 720px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+  .bk-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 18px 20px; }
+  .bk-full { grid-column: 1 / -1; }
+  .bk-field { display: flex; flex-direction: column; gap: 8px; font-size: 18px; font-weight: 500; }
+  .bk-field input, .bk-field textarea {
+    font: inherit; font-size: 19px; font-weight: 400; color: #111111; padding: 0 18px; height: 58px;
+    border: 1.5px solid #BDB8B2; border-radius: 6px; background: #FFFFFF; box-shadow: 0 2px 6px rgba(17,17,17,0.05); outline: none;
+  }
+  .bk-field textarea { height: auto; min-height: 96px; padding: 14px 18px; resize: vertical; }
+  .bk-field input:focus, .bk-field textarea:focus { border-color: #111111; box-shadow: 0 0 0 3px rgba(143,233,196,0.55); }
+  .bk-field.has-error input { border-color: #B4235A; }
+  .bk-req { color: #A3436F; font-weight: 700; }
+  .bk-err { font-size: 15px; font-weight: 500; color: #B4235A; }
+  .bk-check { display: flex; align-items: center; gap: 12px; font-size: 18px; cursor: pointer; }
+  .bk-check input { width: 22px; height: 22px; accent-color: #111111; margin: 0; flex-shrink: 0; }
+  .bk-check a { color: #111111; }
+
+  .bk-done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 22px; max-width: 780px; margin: 0 auto; }
+  .bk-check-icon { width: 76px; height: 76px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #111111; }
+  .bk-done h3 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: clamp(44px, 6vw, 60px); line-height: 1.05; }
+  .bk-done p { margin: 0; font-size: clamp(19px, 2.4vw, 24px); color: #4A4750; line-height: 1.5; }
+  .bk-done .bk-discount { font-size: 20px; font-weight: 600; color: #8A2E5E; padding: 10px 20px; border-radius: 999px; background: #FDE7F1; }
+  .bk-done dl { margin: 8px 0 0; width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); border-top: 1px solid #111111; text-align: left; }
+  .bk-done dl > div { padding: 20px 24px 20px 0; border-bottom: 1px solid #E4E1DD; }
+  .bk-done dt { font-size: 22px; color: #5E5B64; }
+  .bk-done dd { margin: 6px 0 0; font-size: clamp(22px, 2.6vw, 28px); font-weight: 500; line-height: 1.25; }
+  .bk-link { font-size: 18px; color: #111111; }
+
+  .bk-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding-top: 20px; border-top: 1px solid #E4E1DD; }
+  .bk-btn { font: inherit; font-size: 17px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; min-height: 52px; padding: 0 28px; border-radius: 2px; border: 1.5px solid #111111; background: #FFFFFF; color: #111111; }
+  .bk-btn.dark { background: #111111; color: #FFFFFF; }
+  .bk-btn:disabled, .bk-btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+  .bk-error { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; border-radius: 6px; background: #FDF0F5; border: 1px solid #F2C6D9; color: #6E1240; }
+  .bk-error p { margin: 0; font-size: 17px; line-height: 1.5; }
+  .bk-error-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .bk-error-actions .bk-btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+</style>

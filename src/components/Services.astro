@@ -1,0 +1,70 @@
+---
+import type { Lang } from '../lib/booking-core';
+import { useTranslations } from '../i18n/ui';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const t = useTranslations(lang);
+---
+<div class="bg-mint">
+  <section id="servicios" class="container section" style="display: flex; flex-direction: column; gap: 40px">
+    <div class="services-head">
+      <div style="display: flex; flex-direction: column; gap: 16px" data-stagger>
+        <span class="eyebrow">{t('services.eyebrow')}</span>
+        <h2 class="h2">{t('services.title')}</h2>
+      </div>
+      <p data-reveal="up" style="--rd: .25s">{t('services.text')}</p>
+    </div>
+    <p class="data-status" data-data-status></p>
+    <div class="carousel" data-needs-data hidden>
+      <button type="button" class="carousel-arrow" data-scroll="-1" aria-label={t('services.prev')}><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1F4A42" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg></button>
+      <!-- Las tarjetas se crean en el navegador con los servicios de Google Sheets -->
+      <div id="svc-track" class="svc-track" data-lang={lang} data-label-min={t('services.min')} data-label-from={t('services.from')} data-label-book={t('services.book')}></div>
+      <button type="button" class="carousel-arrow" data-scroll="1" aria-label={t('services.next')}><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1F4A42" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg></button>
+    </div>
+    <button type="button" class="btn btn-pearl" style="align-self: center" data-needs-data hidden data-show-all data-label-all={t('services.all')} data-label-less={t('services.less')}>
+      <span>{t('services.all')}</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"></path></svg>
+    </button>
+  </section>
+</div>
+
+<script>
+  import { onSiteData } from '../lib/site-data';
+  import { esc } from '../lib/format';
+  import type { Lang, Service } from '../lib/booking-core';
+
+  const track = document.getElementById('svc-track')!;
+  const arrows = document.querySelectorAll<HTMLButtonElement>('[data-scroll]');
+  arrows.forEach((b) => b.addEventListener('click', () => track.scrollBy({ left: Number(b.dataset.scroll) * 320, behavior: 'smooth' })));
+
+  // «Ver todos»: pasa del carrusel a una cuadrícula con todos los servicios.
+  const allBtn = document.querySelector<HTMLButtonElement>('[data-show-all]')!;
+  allBtn.addEventListener('click', () => {
+    const grid = track.classList.toggle('is-grid');
+    arrows.forEach((a) => (a.style.visibility = grid ? 'hidden' : 'visible'));
+    allBtn.querySelector('span')!.textContent = grid ? allBtn.dataset.labelLess! : allBtn.dataset.labelAll!;
+    if (!grid) document.getElementById('servicios')!.scrollIntoView({ behavior: 'smooth' });
+  });
+
+  // Las tarjetas salen SOLO de la hoja (pestaña «Servicios», filas con visible = SI).
+  const lang = (track.dataset.lang || 'es') as Lang;
+  const card = (s: Service, i: number) => {
+    const img = s.image ? (/^https?:/.test(s.image) ? s.image : '/images/' + s.image) : '';
+    return `<article class="svc-card svc-card-in" data-svc="${esc(s.id)}" style="--rd: ${Math.min(i, 6) * 0.1}s">
+      ${img ? `<img src="${esc(img)}" alt="" loading="lazy" style="object-position: ${esc(s.imagePos || '50% 50%')}" />` : ''}
+      <div class="svc-body">
+        <h3>${esc(s.name[lang] || s.name.es)}</h3>
+        <p>${esc(s.desc[lang] || s.desc.es)}</p>
+        <div class="svc-meta">
+          <span class="dur">${s.duration} ${esc(track.dataset.labelMin!)}</span>
+          <span class="price">${esc(track.dataset.labelFrom!)} ${s.price} €</span>
+        </div>
+        <button type="button" class="btn btn-pearl btn-sm" data-book data-service="${esc(s.id)}">${esc(track.dataset.labelBook!)}</button>
+      </div>
+    </article>`;
+  };
+  onSiteData({
+    ok: (cat) => { track.innerHTML = cat.services.filter((s) => s.visible).map(card).join(''); },
+    fail: () => { track.innerHTML = ''; },
+  });
+</script>
