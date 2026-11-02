@@ -40,8 +40,8 @@ const t = useTranslations(lang);
   // «Ver todos»: pasa del carrusel a una cuadrícula con todos los servicios.
   const allBtn = document.querySelector<HTMLButtonElement>('[data-show-all]')!;
   allBtn.addEventListener('click', () => {
+    // Las flechas se ocultan por CSS (.carousel:has(.is-grid)).
     const grid = track.classList.toggle('is-grid');
-    arrows.forEach((a) => (a.style.visibility = grid ? 'hidden' : 'visible'));
     allBtn.querySelector('span')!.textContent = grid ? allBtn.dataset.labelLess! : allBtn.dataset.labelAll!;
     if (!grid) document.getElementById('servicios')!.scrollIntoView({ behavior: 'smooth' });
   });

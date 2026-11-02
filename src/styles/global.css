@@ -424,48 +424,6 @@ button {
     padding: 16px 24px;
   }
 }
-@media (max-width: 720px) {
-  /* smaller arrows so the track gets more room */
-  .carousel {
-    margin: 0 -8px;
-    gap: 0;
-  }
-  .carousel-arrow {
-    width: 32px;
-    height: 32px;
-  }
-  .carousel-arrow svg {
-    width: 22px;
-    height: 22px;
-  }
-
-  /* card sized to the track, not a fixed 260px min */
-  .svc-track {
-    gap: 14px;
-    padding: 6px 2px 28px;
-  }
-  .svc-card {
-    flex: 0 0 100%;
-    border-radius: 22px;
-    padding: 10px;
-    gap: 12px;
-  }
-  .svc-card img {
-    height: 180px;
-    border-radius: 16px;
-  } /* was 220px */
-
-  .svc-body {
-    padding: 2px 6px 6px;
-    gap: 8px;
-  }
-  .svc-body h3 {
-    font-size: 24px;
-  } /* was 30px */
-  .svc-body p {
-    font-size: 16px;
-  } /* was 18px */
-}
 /* ---------- Hero ---------- */
 .hero-wrap {
   position: relative;
@@ -933,6 +891,107 @@ button {
 .svc-meta .num {
   font-family: var(--font-num);
   font-weight: 700;
+}
+/* En modo cuadrícula las flechas no ocupan espacio */
+.carousel:has(.svc-track.is-grid) .carousel-arrow {
+  display: none;
+}
+
+/* Móvil: va DESPUÉS de las reglas base para que tenga prioridad */
+@media (max-width: 720px) {
+  /* flechas pequeñas que aprovechan el padding del contenedor */
+  .carousel {
+    margin: 0 -12px;
+    gap: 0;
+  }
+  .carousel-arrow {
+    width: 28px;
+    height: 28px;
+    margin-bottom: 20px;
+  }
+  .carousel-arrow svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* una tarjeta entera por vista */
+  .svc-track {
+    gap: 12px;
+    padding: 6px 0 24px;
+  }
+  .svc-card {
+    flex: 0 0 100%;
+    scroll-snap-align: center;
+    border-radius: 22px;
+    padding: 10px;
+    gap: 12px;
+  }
+  .svc-card img {
+    height: 180px;
+    border-radius: 16px;
+  }
+  .svc-body {
+    padding: 2px 6px 6px;
+    gap: 8px;
+  }
+  .svc-body h3 {
+    font-size: 24px;
+  }
+  .svc-body p {
+    font-size: 16px;
+  }
+
+  /* «Ver servicios»: cuadrícula de 2 columnas con tarjetas compactas */
+  .carousel:has(.svc-track.is-grid) {
+    margin: 0;
+  }
+  .svc-track.is-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 6px 0 24px;
+  }
+  .svc-track.is-grid .svc-card {
+    padding: 8px;
+    gap: 10px;
+    border-radius: 16px;
+  }
+  .svc-track.is-grid .svc-card img {
+    height: 110px;
+    border-radius: 12px;
+  }
+  .svc-track.is-grid .svc-body {
+    padding: 0 2px 2px;
+    gap: 6px;
+  }
+  .svc-track.is-grid .svc-body h3 {
+    font-size: 18px;
+  }
+  .svc-track.is-grid .svc-body p {
+    font-size: 13px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .svc-track.is-grid .svc-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding-top: 4px;
+  }
+  .svc-track.is-grid .svc-meta .dur {
+    font-size: 13px;
+  }
+  .svc-track.is-grid .svc-meta .price {
+    font-size: 14px;
+  }
+  .svc-track.is-grid .btn-sm {
+    width: 100%;
+    justify-content: center;
+    padding: 10px 8px;
+    font-size: 13px;
+  }
 }
 
 /* ---------- Sección reservas ---------- */
