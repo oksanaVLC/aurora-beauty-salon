@@ -30,7 +30,7 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
 <script>
   import { getCatalog, getBookableDays, getSlots, book, ApiError } from '../lib/booking-api';
   import { reloadSiteData, telHref, mapsQuery } from '../lib/site-data';
-  import { staffFor, type Booking, type Catalog, type Lang, type Slot } from '../lib/booking-core';
+  import { staffFor, nowInSalon, weekday, type Booking, type Catalog, type Lang, type Slot } from '../lib/booking-core';
   import { formatDateLong, formatDayParts, downloadIcs, esc } from '../lib/format';
 
   const cfg = JSON.parse(document.getElementById('bk-config')!.textContent!) as {
@@ -50,6 +50,7 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
     serviceId: string;
     staffId: string; // 'any' o id
     days: string[];
+    month: string; // mes que enseña el calendario, YYYY-MM
     date: string;
     slots: Slot[];
     loadingSlots: boolean;
@@ -69,7 +70,7 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
 
   function fresh(): State {
     return {
-      step: 0, serviceId: '', staffId: 'any', days: [], date: '', slots: [], loadingSlots: false, time: '',
+      step: 0, serviceId: '', staffId: 'any', days: [], month: '', date: '', slots: [], loadingSlots: false, time: '',
       form: { name: '', email: '', phone: '', notes: '', privacy: false }, errors: {}, alert: '', sending: false, booking: null,
       loadingCat: false, fatal: '', slotsError: ''
     };
@@ -142,12 +143,13 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
 
   async function loadDays() {
     try {
-      S.days = await getBookableDays(S.serviceId, S.staffId, 14);
+      S.days = await getBookableDays(S.serviceId, S.staffId);
     } catch (err) {
       S.days = []; S.date = ''; S.slots = []; S.slotsError = errMsg(err);
       return;
     }
     if (!S.days.includes(S.date)) { S.date = S.days[0] ?? ''; S.time = ''; }
+    S.month = (S.date || nowInSalon().date).slice(0, 7);
     await loadSlots();
   }
 
@@ -234,13 +236,38 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
       case 'service': S.serviceId = v; S.staffId = 'any'; render(); break;
       case 'any': S.staffId = 'any'; await goTo(2); break;
       case 'staff': S.staffId = S.staffId === v ? 'any' : v; render(); break;
-      case 'day': S.date = v; S.time = ''; S.alert = ''; await loadSlots(); break;
+      case 'day': S.date = v; S.time = ''; S.alert = ''; await loadSlots(); refocus(`[data-act="day"][data-val="${v}"]`); break;
+      case 'month': S.month = shiftMonth(S.month, Number(v)); render(); refocus(`[data-act="month"][data-val="${v}"]:not(:disabled)`) || refocus('.bk-cal-day:not(:disabled)'); break;
       case 'time': S.time = v; S.alert = ''; render(); break;
       case 'ics': downloadIcs(S.booking!, service(), cat.salon.name, mapsQuery(cat), L); break;
       case 'retry-open': await open(pendingService); break;
       case 'retry-slots': if (S.date) await loadSlots(); else { await loadDays(); render(); } break;
-      case 'scroll-days': elBody.querySelector('.bk-days')?.scrollBy({ left: Number(v) * 300, behavior: 'smooth' }); break;
     }
+  });
+
+  /** Tras volver a pintar, devuelve el foco al mismo botón (para teclado y lectores de pantalla). */
+  function refocus(selector: string): boolean {
+    const el = elBody.querySelector<HTMLElement>(selector);
+    el?.focus({ preventScroll: true });
+    return !!el;
+  }
+
+  /** Calendario con teclado: flechas = ±1 día / ±1 semana (salta los días no disponibles), Inicio/Fin = primer/último día del mes. */
+  elBody.addEventListener('keydown', (e) => {
+    const cur = (e.target as HTMLElement).closest<HTMLButtonElement>('.bk-cal-day');
+    if (!cur) return;
+    const all = [...elBody.querySelectorAll<HTMLButtonElement>('.bk-cal-day')];
+    const enabled = all.filter((b) => !b.disabled);
+    const i = all.indexOf(cur);
+    let target: HTMLButtonElement | undefined;
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 7, ArrowUp: -7 }[e.key];
+    if (step) {
+      for (let j = i + step; j >= 0 && j < all.length; j += step) if (!all[j].disabled) { target = all[j]; break; }
+    } else if (e.key === 'Home') target = enabled[0];
+    else if (e.key === 'End') target = enabled[enabled.length - 1];
+    else return;
+    e.preventDefault();
+    target?.focus();
   });
   elBody.addEventListener('input', (e) => {
     const el = e.target as HTMLInputElement;
@@ -332,15 +359,9 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
   function renderDate() {
     const svc = service();
     const who = S.staffId === 'any' ? t('modal.done.any') : staffName(S.staffId);
-    const month = S.date ? formatDayParts(S.date, L).monthLong : '';
-    const days = S.days.map((d) => {
-      const p = formatDayParts(d, L);
-      const on = d === S.date;
-      return `<button type="button" role="radio" aria-checked="${on}" class="bk-day ${on ? 'sel' : ''}" data-act="day" data-val="${d}">
-        <span class="bk-wd">${esc(p.wdShort)}</span><span class="bk-num">${p.day}</span><span class="bk-mon">${esc(p.monShort)}</span></button>`;
-    }).join('');
     let times = '';
-    if (S.loadingSlots) times = `<p class="bk-muted">${esc(t('modal.date.loading'))}</p>`;
+    if (!S.date && !S.slotsError) times = `<p class="bk-muted">${esc(t(S.days.length ? 'modal.date.choose' : 'modal.date.noDays'))}</p>`;
+    else if (S.loadingSlots) times = `<p class="bk-muted">${esc(t('modal.date.loading'))}</p>`;
     else if (S.slotsError) times = errorBox(S.slotsError, 'retry-slots');
     else if (!S.slots.some((s) => s.staffId)) times = `<p class="bk-muted">${esc(t('modal.date.none'))}</p>`;
     else times = `<div class="bk-times" role="radiogroup" aria-label="${esc(t('modal.step.date'))}">${S.slots.map((s) =>
@@ -350,14 +371,62 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
     ).join('')}</div>`;
     return `
       <div class="bk-summary"><span class="bk-strong">${esc(svc.name[L] || svc.name.es)} · ${esc(who)}</span><span class="bk-muted">${svc.duration} ${esc(t('services.min'))} · ${esc(t('services.from'))} ${svc.price} €</span></div>
-      <div class="bk-head"><h3>${esc(t('modal.date.title'))}</h3><span class="bk-muted bk-cap">${esc(month)}</span></div>
-      <div class="bk-days-wrap">
-        <button type="button" class="bk-arrow" data-act="scroll-days" data-val="-1" aria-label="‹">‹</button>
-        <div class="bk-days" role="radiogroup">${days}</div>
-        <button type="button" class="bk-arrow" data-act="scroll-days" data-val="1" aria-label="›">›</button>
-      </div>
-      ${alertBox()}
-      ${times}`;
+      <div class="bk-head"><h3>${esc(t('modal.date.title'))}</h3></div>
+      <div class="bk-date-grid">
+        ${renderCalendar()}
+        <div class="bk-date-times">
+          ${S.date ? `<p class="bk-strong bk-date-sel">${esc(formatDateLong(S.date, L))}</p>` : ''}
+          ${alertBox()}
+          ${times}
+        </div>
+      </div>`;
+  }
+
+  /** YYYY-MM desplazado n meses. */
+  function shiftMonth(ym: string, n: number): string {
+    const [y, m] = ym.split('-').map(Number);
+    const d = new Date(Date.UTC(y, m - 1 + n, 1));
+    return d.toISOString().slice(0, 7);
+  }
+
+  /** Calendario mensual (lunes → domingo). Solo se pueden pulsar los días con hueco posible según la hoja. */
+  function renderCalendar() {
+    const today = nowInSalon().date;
+    const month = S.month || today.slice(0, 7);
+    const minMonth = today.slice(0, 7);
+    const maxMonth = (S.days[S.days.length - 1] ?? today).slice(0, 7);
+    const [y, m] = month.split('-').map(Number);
+    const total = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const lead = (weekday(`${month}-01`) + 6) % 7; // huecos antes del día 1 (semana empezando en lunes)
+    const bookable = new Set(S.days);
+    const wd = t('wd.short').split('|');
+    const head = [1, 2, 3, 4, 5, 6, 0].map((i) => `<span class="bk-cal-wd" aria-hidden="true">${esc(wd[i])}</span>`).join('');
+    // Con Tab se entra en un solo día (el elegido o el primero disponible del mes); dentro, se mueve con las flechas.
+    const inMonth = S.days.filter((d) => d.startsWith(month));
+    const tabStop = inMonth.includes(S.date) ? S.date : inMonth[0];
+    let cells = '<span></span>'.repeat(lead);
+    for (let d = 1; d <= total; d++) {
+      const date = `${month}-${String(d).padStart(2, '0')}`;
+      const ok = bookable.has(date);
+      const sel = date === S.date;
+      const cls = ['bk-cal-day', sel ? 'sel' : '', date === today ? 'today' : '', ok ? '' : 'off'].join(' ');
+      const attrs = ok ? `aria-pressed="${sel}" tabindex="${date === tabStop ? 0 : -1}"` : 'disabled';
+      cells += `<button type="button" class="${cls}" data-act="day" data-val="${date}" aria-label="${esc(formatDateLong(date, L))}" ${attrs}>${d}</button>`;
+    }
+    const nav = (dir: -1 | 1) => {
+      const off = dir < 0 ? month <= minMonth : month >= maxMonth;
+      return `<button type="button" class="bk-cal-nav" data-act="month" data-val="${dir}" aria-label="${esc(t(dir < 0 ? 'modal.date.prev' : 'modal.date.next'))}" ${off ? 'disabled' : ''}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${dir < 0 ? 'M15 5l-7 7 7 7' : 'M9 5l7 7-7 7'}"></path></svg></button>`;
+    };
+    return `
+      <div class="bk-cal">
+        <div class="bk-cal-top">
+          ${nav(-1)}
+          <span class="bk-cal-title bk-cap" aria-live="polite">${esc(formatDayParts(`${month}-01`, L).monthLong)}</span>
+          ${nav(1)}
+        </div>
+        <div class="bk-cal-grid">${head}${cells}</div>
+      </div>`;
   }
 
   function field(name: string, label: string, type: string, auto: string, required = true) {
@@ -487,16 +556,30 @@ const config = { lang, dict: ui[lang], citaPath: localePath(lang, '/cita'), priv
   .bk-avatar { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 28px; background: #F2EFEB; }
 
   .bk-summary { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border-radius: 4px; background: #F6F4F1; border: 1px solid #E4E1DD; }
-  .bk-days-wrap { display: flex; align-items: center; gap: 6px; }
-  .bk-arrow { flex-shrink: 0; width: 40px; height: 40px; border: none; background: transparent; cursor: pointer; font-size: 34px; line-height: 1; color: #111111; }
-  .bk-days { flex: 1 1 auto; display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding: 2px; }
-  .bk-days::-webkit-scrollbar { display: none; }
-  .bk-day { font: inherit; flex: 0 0 calc((100% - 48px) / 7); min-width: 74px; scroll-snap-align: start; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 0; border-radius: 4px; border: 1px solid #E4E1DD; background: #FFFFFF; color: #111111; }
-  .bk-day.sel { background: #111111; color: #FFFFFF; border-color: #111111; }
-  .bk-wd { font-size: 16px; font-weight: 500; }
-  .bk-num { font-family: var(--font-num); font-size: 22px; font-weight: 700; }
-  .bk-mon { font-size: 14px; opacity: 0.75; }
-  .bk-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+  .bk-date-grid { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); gap: 20px 36px; align-items: start; }
+  @media (max-width: 760px) { .bk-date-grid { grid-template-columns: minmax(0, 1fr); } }
+  .bk-date-times { display: flex; flex-direction: column; gap: 14px; }
+  .bk-date-sel { margin: 0; font-size: 19px; }
+
+  .bk-cal { border: 1px solid #E4E1DD; border-radius: 6px; padding: 14px; width: 100%; max-width: 420px; justify-self: center; }
+  .bk-cal-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .bk-cal-title { font-size: 19px; font-weight: 600; text-align: center; }
+  .bk-cal-nav { width: 44px; height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 1px solid #E4E1DD; border-radius: 50%; background: #FFFFFF; color: #111111; cursor: pointer; }
+  .bk-cal-nav:hover:not(:disabled) { border-color: #111111; }
+  .bk-cal-nav:disabled { opacity: 0.3; cursor: default; }
+  .bk-cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .bk-cal-wd { text-align: center; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #8C8890; padding: 4px 0 6px; }
+  .bk-cal-day {
+    font: inherit; font-family: var(--font-num); font-size: 17px; font-weight: 600; aspect-ratio: 1; min-height: 40px; width: 100%;
+    display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1.5px solid transparent;
+    background: #F6F4F1; color: #111111; cursor: pointer; position: relative;
+  }
+  .bk-cal-day:hover:not(:disabled):not(.sel) { border-color: #111111; }
+  .bk-cal-day:focus-visible { outline: 3px solid rgba(143,233,196,0.9); outline-offset: 1px; }
+  .bk-cal-day.today::after { content: ''; position: absolute; bottom: 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .bk-cal-day.sel { background: #111111; color: #FFFFFF; }
+  .bk-cal-day.off { background: transparent; color: #C4C0BB; font-weight: 400; cursor: default; }
+  .bk-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
   .bk-time { font: inherit; font-size: 18px; font-weight: 500; cursor: pointer; padding: 14px 0; border-radius: 4px; border: 1px solid #E4E1DD; background: #FFFFFF; color: #111111; }
   .bk-time.sel { background: #111111; color: #FFFFFF; border-color: #111111; }
   .bk-time.busy { cursor: default; border-style: dashed; border-color: #D6D2CD; background: transparent; color: #8C8890; text-decoration: line-through; font-weight: 400; }

@@ -132,8 +132,11 @@ export function getCatalog(): Promise<Catalog> {
   return catalogCache;
 }
 
-/** Días con el salón abierto y alguna profesional para ese servicio (los próximos N), según la hoja. */
-export async function getBookableDays(serviceId: string, staffId: string, count = 14): Promise<string[]> {
+/**
+ * Días con el salón abierto y alguna profesional para ese servicio, según la hoja.
+ * Por defecto, todos los de la ventana de reserva (ajuste «dias_reserva»); `count` limita cuántos.
+ */
+export async function getBookableDays(serviceId: string, staffId: string, count = Infinity): Promise<string[]> {
   const cat = await getCatalog();
   const today = nowInSalon().date;
   const days: string[] = [];
