@@ -815,9 +815,9 @@ button {
 
 @media (max-width: 720px) {
   .promo {
-    scale: 0.75; /* 75% size/
+    scale: 0.75;
     transform-origin: left bottom;
-    bottom: -24px;               /* was -36px, optional */
+    bottom: -36px;
   }
 }
 
